@@ -30,9 +30,10 @@
 #define FLAG_CONNECTED BIT(1)
 
 /* tools/roba-monitor/roba_monitor/ble_windows.py の UUID と揃えること */
-static const struct bt_uuid_128 service_uuid = BT_UUID_INIT_128(
+/* BT_GATT_PRIMARY_SERVICE は const でないポインタを受け取るので、const を付けない */
+static struct bt_uuid_128 service_uuid = BT_UUID_INIT_128(
     BT_UUID_128_ENCODE(0x7a6e0001, 0x52b1, 0x4c3e, 0x9f0a, 0x6d2c8e4b1f30));
-static const struct bt_uuid_128 profiles_uuid = BT_UUID_INIT_128(
+static struct bt_uuid_128 profiles_uuid = BT_UUID_INIT_128(
     BT_UUID_128_ENCODE(0x7a6e0002, 0x52b1, 0x4c3e, 0x9f0a, 0x6d2c8e4b1f30));
 
 static ssize_t read_profiles(struct bt_conn *conn, const struct bt_gatt_attr *attr, void *buf,

@@ -62,10 +62,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.once:
+        from .app import ProfileStore
+
         backend = WindowsBackend(args.name)
-        status = interpret(asyncio.run(backend.poll()))
+        raw = asyncio.run(backend.poll())
         backend.reset()
+        status = interpret(raw)
+        profiles = ProfileStore(args.data_dir)
+        profiles.update(raw, status)
         print("\n".join(menu_lines(status)))
+        print()
+        print("\n".join(profiles.lines()))
         return 0 if status.found else 1
 
     from .app import MonitorApp, SingleInstance
