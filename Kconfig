@@ -1,0 +1,7 @@
+config ROBA_BT_PROFILE_INFO
+    bool "Expose each BT profile's paired host over GATT (for roba-monitor)"
+    depends on ZMK_BLE
+    default n
+    help
+      BT1-BT5 それぞれのペアリング相手のアドレスと接続状態を、
+      独自の GATT サービスで PC から読めるようにする。セントラル（右手）でだけ有効にする。
