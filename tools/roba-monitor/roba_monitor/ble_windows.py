@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 
 from winrt.windows.devices.bluetooth import (
+    BluetoothAdapter,
     BluetoothCacheMode,
     BluetoothConnectionStatus,
     BluetoothLEDevice,
@@ -23,7 +25,7 @@ from winrt.windows.devices.bluetooth.genericattributeprofile import (
 )
 from winrt.windows.devices.enumeration import DeviceInformation
 
-from .model import BatteryReading, RawSnapshot
+from .model import BatteryReading, RawSnapshot, format_address
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +37,10 @@ def _uuid16(short: int) -> uuid.UUID:
 BATTERY_SERVICE = _uuid16(0x180F)
 BATTERY_LEVEL = _uuid16(0x2A19)
 USER_DESCRIPTION = _uuid16(0x2901)
+# 右手のファームウェア（src/bt_profile_info.c）の独自サービス。UUID はファーム側と揃える
+PROFILE_SERVICE = uuid.UUID("7a6e0001-52b1-4c3e-9f0a-6d2c8e4b1f30")
+PROFILE_LIST = uuid.UUID("7a6e0002-52b1-4c3e-9f0a-6d2c8e4b1f30")
+UNCACHED_RETRY_SECONDS = 600
 
 SUCCESS = GattCommunicationStatus.SUCCESS
 CACHED = BluetoothCacheMode.CACHED
@@ -63,6 +69,8 @@ class WindowsBackend:
         self.timeout = timeout
         self._device = None
         self._descriptions: dict[int, str] = {}
+        self._this_pc: str | None = None
+        self._profile_uncached_at = float("-inf")
 
     # ------------------------------------------------------------ public
 
@@ -86,6 +94,7 @@ class WindowsBackend:
             _close(self._device)
         self._device = None
         self._descriptions.clear()
+        self._profile_uncached_at = float("-inf")
 
     # ------------------------------------------------------------ internals
 
@@ -130,13 +139,56 @@ class WindowsBackend:
             return RawSnapshot(found=True, host_connected=False, device_name=device.name)
 
         readings, error = await self._read_batteries(device)
+        profiles = await self._read_profiles(device)
         return RawSnapshot(
             found=True,
             host_connected=self._is_connected(),
             readings=tuple(readings),
             error=error,
             device_name=device.name,
+            profiles=profiles,
+            this_pc=await self._this_pc_address(),
         )
+
+    async def _this_pc_address(self) -> str | None:
+        if self._this_pc is None:
+            try:
+                adapter = await BluetoothAdapter.get_default_async()
+                if adapter is not None:
+                    self._this_pc = format_address(adapter.bluetooth_address)
+            except Exception:  # noqa: BLE001
+                log.exception("failed to read the PC's Bluetooth address")
+        return self._this_pc
+
+    async def _read_profiles(self, device) -> bytes | None:
+        """BT1〜BT5 の一覧を読む。古いファーム（サービスなし）や読めないときは None."""
+        try:
+            services = []
+            # ファーム更新直後はキャッシュに無いので取り直す。ただし古いファームで毎回取り直さないよう、間隔をあける
+            modes = [CACHED]
+            if time.monotonic() - self._profile_uncached_at > UNCACHED_RETRY_SECONDS:
+                modes.append(UNCACHED)
+            for mode in modes:
+                if mode is UNCACHED:
+                    self._profile_uncached_at = time.monotonic()
+                result = await device.get_gatt_services_for_uuid_with_cache_mode_async(PROFILE_SERVICE, mode)
+                services = list(result.services) if result.status == SUCCESS else []
+                if services:
+                    break
+            if not services:
+                return None
+            try:
+                chars = await services[0].get_characteristics_for_uuid_with_cache_mode_async(PROFILE_LIST, CACHED)
+                if chars.status != SUCCESS or not list(chars.characteristics):
+                    return None
+                value = await list(chars.characteristics)[0].read_value_with_cache_mode_async(UNCACHED)
+                return _bytes(value.value) if value.status == SUCCESS else None
+            finally:
+                for service in services:
+                    _close(service)
+        except Exception:  # noqa: BLE001 - 一覧が読めなくても電池の表示は続ける
+            log.exception("failed to read BT profiles")
+            return None
 
     async def _read_batteries(self, device) -> tuple[list[BatteryReading], str | None]:
         result = await device.get_gatt_services_for_uuid_with_cache_mode_async(BATTERY_SERVICE, CACHED)
@@ -235,7 +287,7 @@ async def diagnose(name: str = "roBa") -> str:
                         except Exception:  # noqa: BLE001
                             pass
                         line = f"    char {ch.uuid} handle={ch.attribute_handle} desc={desc!r}"
-                        if ch.uuid == BATTERY_LEVEL:
+                        if ch.uuid in (BATTERY_LEVEL, PROFILE_LIST):
                             value = await ch.read_value_with_cache_mode_async(UNCACHED)
                             data = _bytes(value.value) if value.status == SUCCESS else b""
                             line += f" read={value.status.name} value={list(data)}"

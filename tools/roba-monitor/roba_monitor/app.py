@@ -8,18 +8,97 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import json
 import logging
 import os
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from .model import Notifier, Status, interpret, menu_lines, tooltip
+from .model import (
+    Link,
+    Notifier,
+    ProfileTable,
+    RawSnapshot,
+    Status,
+    interpret,
+    menu_lines,
+    names_template,
+    parse_names,
+    parse_profiles,
+    profile_lines,
+    tooltip,
+)
 
 log = logging.getLogger(__name__)
 
 MENU_LINES = 6  # 状態表示に使うメニュー行の最大数
+PROFILE_MENU_LINES = 7  # BT 設定の一覧に使うメニュー行の最大数
 HEARTBEAT = timedelta(minutes=30)
+
+
+class ProfileStore:
+    """BT1〜BT5 の一覧を覚えておく.
+
+    右手が別の端末に切り替わっている間は PC から読めないので、最後に読めた一覧を
+    data/profiles.json に保存して表示に使う。端末の名前は data/device_names.txt に書く。
+    """
+
+    def __init__(self, data_dir: Path) -> None:
+        self.path = data_dir / "profiles.json"
+        self.names_path = data_dir / "device_names.txt"
+        self.table: ProfileTable | None = None
+        self.this_pc: str | None = None
+        self.live = False
+        self._load()
+
+    def _load(self) -> None:
+        try:
+            saved = json.loads(self.path.read_text(encoding="utf-8"))
+            self.table = parse_profiles(bytes.fromhex(saved["data"]), datetime.fromisoformat(saved["read_at"]))
+            self.this_pc = saved.get("this_pc")
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError, KeyError):
+            log.exception("ignoring unreadable %s", self.path)
+
+    def update(self, raw: RawSnapshot, status: Status) -> None:
+        self.live = False
+        if raw.this_pc:
+            self.this_pc = raw.this_pc
+        if raw.profiles is None or status.right.link is not Link.CONNECTED:
+            return
+        try:
+            table = parse_profiles(raw.profiles, status.at)
+        except ValueError:
+            log.exception("bad profile data: %s", raw.profiles.hex())
+            return
+        self.live = True
+        changed = self.table is None or self.table.entries != table.entries or self.table.active != table.active
+        self.table = table
+        if changed or not self.path.exists():
+            self._save(raw.profiles)
+        if not self.names_path.exists():
+            self.names_path.parent.mkdir(parents=True, exist_ok=True)
+            self.names_path.write_text(names_template(table, self.this_pc), encoding="utf-8-sig")
+
+    def _save(self, data: bytes) -> None:
+        assert self.table is not None
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps({
+            "read_at": self.table.read_at.isoformat(timespec="seconds"),
+            "data": data.hex(),
+            "this_pc": self.this_pc,
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def names(self) -> dict[str, str]:
+        try:
+            return parse_names(self.names_path.read_text(encoding="utf-8-sig"))
+        except OSError:
+            return {}
+
+    def lines(self) -> list[str]:
+        return profile_lines(self.table, self.names(), self.this_pc, self.live)
 
 
 class BatteryLog:
@@ -62,6 +141,7 @@ class MonitorApp:
         self.status: Status | None = None
         self.notifier = Notifier()
         self.battery_log = BatteryLog(data_dir / "battery_log.csv")
+        self.profiles = ProfileStore(data_dir)
         self._loop: asyncio.AbstractEventLoop | None = None
         self._wake: asyncio.Event | None = None
         self._stopping = False
@@ -82,10 +162,21 @@ class MonitorApp:
                 visible=lambda item: self._line(index) != "",
             )
 
+        def profile_item(index: int):
+            return pystray.MenuItem(
+                lambda item: self._profile_line(index),
+                None,
+                enabled=False,
+                visible=lambda item: self._profile_line(index) != "",
+            )
+
         menu = pystray.Menu(
             *(status_item(i) for i in range(MENU_LINES)),
             pystray.Menu.SEPARATOR,
+            *(profile_item(i) for i in range(PROFILE_MENU_LINES)),
+            pystray.Menu.SEPARATOR,
             pystray.MenuItem("今すぐ確認", self._on_refresh),
+            pystray.MenuItem("端末の名前を編集", self._on_edit_names),
             pystray.MenuItem("記録フォルダを開く", self._on_open_folder),
             pystray.MenuItem("終了", self._on_quit),
         )
@@ -102,6 +193,17 @@ class MonitorApp:
     def _line(self, index: int) -> str:
         lines = menu_lines(self.status)
         return lines[index] if index < len(lines) else ""
+
+    def _profile_line(self, index: int) -> str:
+        lines = self.profiles.lines()
+        return lines[index] if index < len(lines) else ""
+
+    def _on_edit_names(self, icon, item) -> None:
+        path = self.profiles.names_path
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(names_template(self.profiles.table, self.profiles.this_pc), encoding="utf-8-sig")
+        os.startfile(path)  # type: ignore[attr-defined]  # 既定のエディタ（メモ帳）で開く
 
     def _on_refresh(self, icon, item) -> None:
         if self._loop is not None and self._wake is not None:
@@ -127,7 +229,9 @@ class MonitorApp:
         self._wake = asyncio.Event()
         while not self._stopping:
             raw = await self.backend.poll()
-            self._apply(interpret(raw))
+            status = interpret(raw)
+            self.profiles.update(raw, status)
+            self._apply(status)
             try:
                 await asyncio.wait_for(self._wake.wait(), self.interval)
             except asyncio.TimeoutError:

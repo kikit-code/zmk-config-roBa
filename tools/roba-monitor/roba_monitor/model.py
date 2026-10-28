@@ -47,6 +47,10 @@ class RawSnapshot:
     readings: tuple[BatteryReading, ...] = ()
     error: str | None = None
     device_name: str | None = None
+    # 右手が公開するプロファイル一覧の生データ（古いファームでは None）
+    profiles: bytes | None = None
+    # この PC の Bluetooth アドレス（"AA:BB:CC:DD:EE:FF"）
+    this_pc: str | None = None
 
 
 @dataclass(frozen=True)
@@ -222,6 +226,122 @@ class Notifier:
         self._warned[side] = min(crossed)
         name = "左手" if side == "left" else "右手"
         return [f"{name}の電池が残り {level}% です"]
+
+
+# ---------------------------------------------------------------- BT プロファイル
+#
+# 右手のファームウェア（src/bt_profile_info.c）が公開する、BT1〜BT5 のペアリング相手の一覧。
+# 形式: [版=1][個数 N][選択中の番号] + N × [フラグ][アドレス種別][アドレス 6 バイト（下位が先）]
+
+PROFILE_FORMAT_VERSION = 1
+PROFILE_HEADER = 3
+PROFILE_ENTRY = 8
+FLAG_PAIRED = 0x01
+FLAG_CONNECTED = 0x02
+
+
+@dataclass(frozen=True)
+class ProfileEntry:
+    index: int  # 0 始まり（表示は BT1〜）
+    paired: bool
+    connected: bool
+    address: str | None  # "AA:BB:CC:DD:EE:FF"（ペアリングしていなければ None）
+
+
+@dataclass(frozen=True)
+class ProfileTable:
+    active: int
+    entries: tuple[ProfileEntry, ...]
+    read_at: datetime = field(default_factory=datetime.now)
+
+
+def format_address(raw: bytes | int) -> str:
+    """6 バイト（下位が先）または整数を、"AA:BB:CC:DD:EE:FF" にする."""
+    if isinstance(raw, int):
+        raw = raw.to_bytes(6, "little")
+    return ":".join(f"{b:02X}" for b in reversed(raw))
+
+
+def parse_profiles(data: bytes, read_at: datetime | None = None) -> ProfileTable:
+    if len(data) < PROFILE_HEADER:
+        raise ValueError(f"プロファイル情報が短すぎます（{len(data)} バイト）")
+    version, count, active = data[0], data[1], data[2]
+    if version != PROFILE_FORMAT_VERSION:
+        raise ValueError(f"未対応の形式です（版 {version}）")
+    if len(data) < PROFILE_HEADER + count * PROFILE_ENTRY:
+        raise ValueError(f"プロファイル情報が途中で切れています（{len(data)} バイト、{count} 件）")
+    entries = []
+    for i in range(count):
+        e = data[PROFILE_HEADER + i * PROFILE_ENTRY: PROFILE_HEADER + (i + 1) * PROFILE_ENTRY]
+        paired = bool(e[0] & FLAG_PAIRED)
+        entries.append(ProfileEntry(
+            index=i,
+            paired=paired,
+            connected=bool(e[0] & FLAG_CONNECTED),
+            address=format_address(e[2:8]) if paired else None,
+        ))
+    return ProfileTable(active, tuple(entries), read_at or datetime.now())
+
+
+def parse_names(text: str) -> dict[str, str]:
+    """device_names.txt を読む。1 行に「AA:BB:CC:DD:EE:FF = 名前」。# 以降はコメント."""
+    names: dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if "=" not in line:
+            continue
+        address, name = (part.strip() for part in line.split("=", 1))
+        address = address.upper().replace("-", ":")
+        if address and name:
+            names[address] = name
+    return names
+
+
+NAMES_TEMPLATE = """\
+# roBa の BT1〜BT5 にペアリングしている端末の名前
+# 1 行に「アドレス = 名前」と書いて保存すると、次の確認から表示に使われます。
+# 行頭の # を消すと有効になります。この PC は自動で「この PC」と表示されます。
+#
+"""
+
+
+def names_template(table: ProfileTable | None, this_pc: str | None) -> str:
+    lines = [NAMES_TEMPLATE]
+    if table is not None:
+        for e in table.entries:
+            if e.address and e.address != this_pc:
+                lines.append(f"# {e.address} = （BT{e.index + 1} の端末の名前）\n")
+    return "".join(lines)
+
+
+def profile_lines(
+    table: ProfileTable | None,
+    names: dict[str, str],
+    this_pc: str | None,
+    live: bool,
+) -> list[str]:
+    """メニューに出す BT1〜BT5 の一覧."""
+    if table is None:
+        return ["BT 設定: まだ読めていません（右手がこの PC に接続中に読みます）"]
+    if live:
+        lines = ["BT 設定（今の状態）"]
+    else:
+        lines = [f"BT 設定（最後に読んだ {table.read_at:%m/%d %H:%M} 時点）"]
+    for e in table.entries:
+        if not e.paired:
+            label = "空き"
+        elif e.address == this_pc:
+            label = "この PC"
+        else:
+            label = names.get(e.address or "", e.address or "?")
+        marks = []
+        if e.index == table.active:
+            marks.append("選択中")
+        if live and e.connected:
+            marks.append("接続中")
+        suffix = f"（{'・'.join(marks)}）" if marks else ""
+        lines.append(f"  BT{e.index + 1}: {label}{suffix}")
+    return lines
 
 
 _LINK_MESSAGES = {
