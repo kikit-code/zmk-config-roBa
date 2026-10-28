@@ -145,3 +145,13 @@ def test_store_ignores_old_firmware(tmp_path):
     raw = raw_with(None)
     store.update(raw, interpret(raw, AT))
     assert store.table is None and not (tmp_path / "profiles.json").exists()
+
+
+def test_names_file_is_written_with_bom_and_read_with_or_without_it(tmp_path):
+    store = ProfileStore(tmp_path)
+    raw = raw_with(table_bytes())
+    store.update(raw, interpret(raw, AT))
+    assert (tmp_path / "device_names.txt").read_bytes().startswith(b"\xef\xbb\xbf")
+    for data in (f"{IPAD} = iPad\n".encode("utf-8-sig"), f"{IPAD} = iPad\n".encode("utf-8")):
+        (tmp_path / "device_names.txt").write_bytes(data)
+        assert store.names() == {IPAD: "iPad"}

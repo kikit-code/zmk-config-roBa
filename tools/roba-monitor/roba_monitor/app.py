@@ -80,7 +80,7 @@ class ProfileStore:
             self._save(raw.profiles)
         if not self.names_path.exists():
             self.names_path.parent.mkdir(parents=True, exist_ok=True)
-            self.names_path.write_text(names_template(table, self.this_pc), encoding="utf-8")
+            self.names_path.write_text(names_template(table, self.this_pc), encoding="utf-8-sig")
 
     def _save(self, data: bytes) -> None:
         assert self.table is not None
@@ -93,7 +93,7 @@ class ProfileStore:
 
     def names(self) -> dict[str, str]:
         try:
-            return parse_names(self.names_path.read_text(encoding="utf-8"))
+            return parse_names(self.names_path.read_text(encoding="utf-8-sig"))
         except OSError:
             return {}
 
@@ -202,7 +202,7 @@ class MonitorApp:
         path = self.profiles.names_path
         if not path.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(names_template(self.profiles.table, self.profiles.this_pc), encoding="utf-8")
+            path.write_text(names_template(self.profiles.table, self.profiles.this_pc), encoding="utf-8-sig")
         os.startfile(path)  # type: ignore[attr-defined]  # 既定のエディタ（メモ帳）で開く
 
     def _on_refresh(self, icon, item) -> None:
