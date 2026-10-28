@@ -88,7 +88,7 @@
         nav_layer {
             display-name = "NAV";
             bindings = <
-&kp LA(F4)  &kp HOME   &kp UP    &kp END    &kp PG_UP                           &kp LC(LS(T))  &kp LC(LS(TAB))  &kp LC(W)      &kp LC(TAB)  &kp LC(T)
+&kp ESC     &kp HOME  &kp UP    &kp END    &kp PG_UP                           &kp LC(LS(T))  &kp LC(LS(TAB))  &kp LC(W)      &kp LC(TAB)  &kp LC(T)
 &none       &kp LEFT   &none     &kp RIGHT  &kp LG(LS(S))  &none       &none    &kp LC(V)      &mkp MB1         &mkp MB3       &mkp MB2     &kp LC(F)
 &none       &kp LC(Z)  &kp DOWN  &kp LC(Y)  &kp PG_DN      &none       &none    &kp LC(C)      &mkp MB4         &kp LG(LCTRL)  &mkp MB5     &kp LC(L)
 &trans      &trans     &trans    &trans     &trans         &trans      &kp DEL  &trans         &trans
