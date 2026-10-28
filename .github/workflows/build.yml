@@ -1,4 +1,16 @@
-on: [push, pull_request, workflow_dispatch]
+# PC 側ツールやドキュメントだけの変更では、ファームウェアのビルドを走らせない
+on:
+  push:
+    paths-ignore:
+      - "tools/**"
+      - "keymap-drawer/**"
+      - "**.md"
+  pull_request:
+    paths-ignore:
+      - "tools/**"
+      - "keymap-drawer/**"
+      - "**.md"
+  workflow_dispatch:
 
 jobs:
   build:
