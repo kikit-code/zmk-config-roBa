@@ -15,6 +15,9 @@
 #define SCROLL 4
 #define SYS 5
 
+// ダイヤル（基本レイヤー）のスクロールの速さ（目盛り/秒）
+#define ENC_SCRL 40
+
 &mt {
     flavor = "balanced";
     tapping-term-ms = <200>;
@@ -34,10 +37,13 @@
 
 / {
     behaviors {
+        // &msc の値は「1秒あたりの目盛り数」。tap-ms の間だけ流れるので、
+        // 既定の SCRL_UP/DOWN（10）だと 10 × 0.04 秒 = 0.4 目盛りになり、何も起きない。
+        // 1クリックで 1〜2 目盛り進むように ENC_SCRL を大きくしている。多すぎ・少なすぎならここを変える。
         scroll_enc: scroll_encoder {
             compatible = "zmk,behavior-sensor-rotate";
             #sensor-binding-cells = <0>;
-            bindings = <&msc SCRL_DOWN>, <&msc SCRL_UP>;
+            bindings = <&msc MOVE_Y(-ENC_SCRL)>, <&msc MOVE_Y(ENC_SCRL)>;
             tap-ms = <40>;
         };
     };
